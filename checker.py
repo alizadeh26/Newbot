@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 import yaml
 import httpx
-
+from checker import collect_nodes, check_nodes
 @dataclass(frozen=True)
 class Node:
     tag: str
