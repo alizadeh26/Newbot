@@ -1,10 +1,9 @@
 name: MyBot Subscription Checker
 
-# اجرا هر ۲ ساعت
 on:
   schedule:
-    - cron: '0 */2 * * *'  # هر ۲ ساعت یکبار
-  workflow_dispatch:        # امکان اجرای دستی از گیت‌هاب
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
 
 jobs:
   run:
@@ -41,3 +40,11 @@ jobs:
 
       - name: Run subscription checker
         run: python run_once.py
+
+      - name: Commit and push healthy outputs
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git add healthy.txt healthy_clash.yaml
+          git commit -m "Update healthy nodes [ci skip]" || echo "No changes to commit"
+          git push
