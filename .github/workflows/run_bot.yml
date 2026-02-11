@@ -1,16 +1,16 @@
-name: Run MyBot Subscription Checker
+name: MyBot Subscription Checker
 
 on:
   schedule:
-    - cron: '0 */2 * * *'  # هر دو ساعت یکبار اجرا میشه
-  workflow_dispatch:
+    - cron: '0 */2 * * *'  # هر 2 ساعت یکبار
+  workflow_dispatch:      # امکان اجرای دستی
 
 jobs:
-  run:
+  check-subscriptions:
     runs-on: ubuntu-latest
     env:
       SINGBOX_VERSION: 1.12.19
-      SINGBOX_DIR: ${{ github.workspace }}/sing-box
+      SINGBOX_PATH: ${{ github.workspace }}/sing-box-${{ env.SINGBOX_VERSION }}-linux-amd64/sing-box
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
       SUBSCRIPTIONS_FILE: subscriptions.txt
@@ -20,30 +20,31 @@ jobs:
       TEST_URL: https://cp.cloudflare.com/generate_204
       TEST_TIMEOUT_MS: 6000
       MAX_CONCURRENCY: 20
+      CHECK_HOST_COUNTRY: ir
+      CHECK_HOST_MAX_ENDPOINTS: 50
+      CHECK_HOST_CONCURRENCY: 5
+      CHECK_HOST_POLL_WAIT_SECONDS: 15
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: 3.11
 
-      - name: Install dependencies
+      - name: Upgrade pip and install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install httpx PyYAML
 
-      - name: Download and setup sing-box
+      - name: Download sing-box
         run: |
-          wget -O sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz
-          mkdir -p $SINGBOX_DIR
-          tar -xzf sing-box.tar.gz -C $SINGBOX_DIR --strip-components=1
-          chmod +x $SINGBOX_DIR/sing-box
-          ls -l $SINGBOX_DIR
+          wget -O sing-box.tar.gz https://github.com/sing-box/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz
+          tar -xzf sing-box.tar.gz
+          chmod +x $SINGBOX_PATH
 
-      - name: Run MyBot
+      - name: Run subscription checker
         run: |
-          export SINGBOX_PATH=$SINGBOX_DIR/sing-box
           python run_once.py
