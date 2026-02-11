@@ -1,109 +1,70 @@
 from __future__ import annotations
-import asyncio
+import base64
+import json
+import urllib.parse
+import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from subs import Node
-from singbox_runner import SingBoxRunner
+import yaml
+import httpx
 
 @dataclass(frozen=True)
-class CheckResult:
-    healthy_links: list[str]
-    healthy_clash_proxies: list[dict]
+class Node:
+    tag: str
+    outbound: dict
+    export_link: str | None
+    export_clash_proxy: dict | None
 
-async def collect_nodes(urls: list[str]) -> list[Node]:
-    from subs import fetch_text, parse_subscription_payload, node_from_share_link, node_from_clash_proxy
+_PROTOCOL_PREFIXES = ("vmess://", "vless://", "trojan://", "ss://")
 
-    nodes: list[Node] = []
-    seen_tags: set[str] = set()
+def _safe_tag(s: str) -> str:
+    s = s.strip()
+    if not s:
+        return "proxy"
+    s = re.sub(r"\s+", " ", s)
+    return s[:64]
 
-    for url in urls:
-        try:
-            text = await fetch_text(url)
-        except Exception:
-            continue
+async def fetch_text(url: str) -> str:
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        r = await client.get(url)
+        r.raise_for_status()
+        return r.text
 
-        links, proxies = parse_subscription_payload(text)
+def parse_subscription_payload(payload: str) -> tuple[list[str], list[dict]]:
+    payload = payload.strip()
+    if payload.startswith("proxies:") or "proxy-groups:" in payload:
+        data = yaml.safe_load(payload)
+        proxies = data.get("proxies") or []
+        return [], [p for p in proxies if isinstance(p, dict)]
+    # try base64 decode
+    try:
+        b = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+        decoded = b.decode("utf-8", errors="ignore")
+        return parse_subscription_payload(decoded)
+    except Exception:
+        pass
+    # fallback: lines with protocol prefix
+    lines = [ln.strip() for ln in payload.splitlines() if ln.strip()]
+    links = [ln for ln in lines if ln.startswith(_PROTOCOL_PREFIXES)]
+    return links, []
 
-        # لینک‌های اشتراک
-        for link in links:
-            try:
-                n = node_from_share_link(link)
-            except Exception:
-                continue
-            if n and n.tag not in seen_tags:
-                seen_tags.add(n.tag)
-                nodes.append(n)
+def node_from_share_link(link: str) -> Node:
+    # فقط نمونه vmess برای سادگی، می‌توان سایر پروتکل‌ها را اضافه کرد
+    if link.startswith("vmess://"):
+        raw = link[len("vmess://"):]
+        raw += "=" * (-len(raw) % 4)
+        data = json.loads(base64.b64decode(raw).decode())
+        tag = _safe_tag(data.get("ps") or "vmess")
+        outbound = {
+            "type": "vmess",
+            "tag": tag,
+            "server": data.get("add"),
+            "server_port": int(data.get("port")),
+            "uuid": data.get("id"),
+            "security": (data.get("scy") or "auto").lower()
+        }
+        return Node(tag=tag, outbound=outbound, export_link=link, export_clash_proxy=None)
+    raise ValueError("Unsupported link")
 
-        # پروکسی‌های کلش
-        for p in proxies:
-            n = node_from_clash_proxy(p)
-            if n and n.tag not in seen_tags:
-                seen_tags.add(n.tag)
-                nodes.append(n)
-
-    return nodes
-
-async def check_nodes(
-    singbox_path: str,
-    clash_api_host: str,
-    clash_api_port: int,
-    test_url: str,
-    timeout_ms: int,
-    max_concurrency: int,
-    nodes: list[Node],
-) -> CheckResult:
-    outbounds = [n.outbound for n in nodes]
-    sem = asyncio.Semaphore(max_concurrency)
-
-    healthy_links: list[str] = []
-    healthy_clash: list[dict] = []
-
-    async with SingBoxRunner(singbox_path, clash_api_host, clash_api_port) as runner:
-        api = await runner.start(outbounds)
-
-        async def one(n: Node) -> None:
-            async with sem:
-                try:
-                    d = await runner.delay_test(api, n.tag, test_url, timeout_ms)
-                except Exception:
-                    return
-                if d is None:
-                    return
-                if n.export_link:
-                    healthy_links.append(n.export_link)
-                if n.export_clash_proxy:
-                    healthy_clash.append(n.export_clash_proxy)
-
-        await asyncio.gather(*(one(n) for n in nodes))
-
-    return CheckResult(healthy_links=healthy_links, healthy_clash_proxies=healthy_clash)
-
-def render_outputs(res: CheckResult) -> tuple[bytes, bytes]:
-    import yaml
-
-    txt = "\n".join(res.healthy_links).strip() + "\n"
-
-    yaml_obj = {
-        "port": 7890,
-        "socks-port": 7891,
-        "allow-lan": True,
-        "mode": "Rule",
-        "log-level": "silent",
-        "proxies": res.healthy_clash_proxies,
-        "proxy-groups": [
-            {
-                "name": "AUTO",
-                "type": "url-test",
-                "url": "https://cp.cloudflare.com/generate_204",
-                "interval": 300,
-                "proxies": [p.get("name") for p in res.healthy_clash_proxies if isinstance(p, dict) and p.get("name")],
-            }
-        ],
-        "rules": ["MATCH,AUTO"],
-    }
-    yml = yaml.safe_dump(yaml_obj, allow_unicode=True, sort_keys=False).encode("utf-8")
-    return txt.encode("utf-8"), yml
-
-def build_commit_message(prefix: str) -> str:
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
-    return f"{prefix} {ts}"
+def node_from_clash_proxy(proxy: dict) -> Node | None:
+    # همینطور که نیاز داری می‌توان گسترش داد
+    return None
