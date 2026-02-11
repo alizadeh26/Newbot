@@ -1,5 +1,6 @@
 name: MyBot Subscription Checker
 
+# اجرا هر ۲ ساعت و امکان اجرای دستی
 on:
   schedule:
     - cron: '0 */2 * * *'
@@ -10,7 +11,6 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      SINGBOX_PATH: ${{ github.workspace }}/sing-box-1.12.19-linux-amd64/sing-box
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
       SUBSCRIPTIONS_FILE: subscriptions.txt
@@ -20,6 +20,8 @@ jobs:
       TEST_URL: https://cp.cloudflare.com/generate_204
       TEST_TIMEOUT_MS: 6000
       MAX_CONCURRENCY: 20
+      SINGBOX_DIR: ${{ github.workspace }}/sing-box-1.12.19-linux-amd64
+      SINGBOX_PATH: ${{ github.workspace }}/sing-box-1.12.19-linux-amd64/sing-box
 
     steps:
       - name: Checkout repository
@@ -35,8 +37,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install httpx pyyaml
 
-      - name: Make sing-box executable
-        run: chmod +x $SINGBOX_PATH
+      - name: Download and setup sing-box
+        run: |
+          mkdir -p $SINGBOX_DIR
+          wget -O sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.12.19/sing-box-1.12.19-linux-amd64.tar.gz
+          tar -xzf sing-box.tar.gz -C $SINGBOX_DIR
+          chmod +x $SINGBOX_PATH
+          ls -l $SINGBOX_DIR
 
       - name: Run subscription checker
         run: python run_once.py
@@ -45,6 +52,22 @@ jobs:
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git add healthy.txt healthy_clash.yaml
+          git add healthy.txt healthy_clash.yaml || echo "No files to add"
           git commit -m "Update healthy nodes [ci skip]" || echo "No changes to commit"
           git push
+
+      - name: Send Telegram notification
+        run: |
+          python - << 'EOF'
+          import os, requests
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          chat_id = os.environ["ADMIN_CHAT_ID"]
+          try:
+              with open("healthy.txt", "r", encoding="utf-8") as f:
+                  count = len([line for line in f.read().splitlines() if line.strip()])
+          except Exception:
+              count = 0
+          text = f"✅ Checked subscriptions. Healthy nodes: {count}"
+          url = f"https://api.telegram.org/bot{token}/sendMessage"
+          requests.post(url, data={"chat_id": chat_id, "text": text})
+          EOF
